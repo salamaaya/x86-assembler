@@ -252,6 +252,22 @@ let set_lower_bits (o:operand) (m:mach) (lower:sbyte): unit =
     m.mem.(a) <- lower
   | _ -> ()
 
+let set_overflow (op:opcode) (src:quad) (dest:quad) (m:mach) : unit = 
+  match op with 
+  | Shlq -> 
+    if (Int64.compare src 1L) == 0 
+    then
+        let msb = Int64.shift_right_logical dest 62 in 
+        m.flags.fo <- (Int64.compare msb 2L) == 0 || (Int64.compare msb 1L) == 0
+    else m.flags.fo <- true 
+  | Sarq -> m.flags.fo <- not ((Int64.compare src 1L) == 0)
+  | Shrq -> 
+    if (Int64.compare src 1L) == 0 
+    then m.flags.fo <- (Int64.compare dest 0L) < 0 
+    else m.flags.fo <- true 
+  | _ -> ()
+
+
 (* carries out all arithmetic instructions that follow that format INS [SRC; DST] *)
 let arith (ol:operand list) (op:opcode) (m:mach) : unit = 
   let src = interp_operand (List.nth ol 0) m in 
@@ -271,9 +287,9 @@ let arith (ol:operand list) (op:opcode) (m:mach) : unit =
   in begin 
     put_data dest m (v.Int64_overflow.value);
     set_conditions v m;
+    set_overflow op src dest_val m;
     m.regs.(rind Rip) <- Int64.add m.regs.(rind Rip) 8L;
   end
-
   
 (* given an instruction, will evaluate it and update the machine's state *)
 let interp (instruction:ins) (m:mach) : unit =
@@ -316,18 +332,10 @@ let interp (instruction:ins) (m:mach) : unit =
         pop dest m;
         m.regs.(rind Rip) <- Int64.add m.regs.(rind Rip) 8L;
       | Leaq -> 
-        let ind = (List.nth ol 0) in
-        begin 
-          match ind with 
-          | Ind1(_) 
-          | Ind2(_)
-          | Ind3(_) -> 
-            let ind_addr = interp_operand (List.nth ol 0) m in
-            let dest = List.nth ol 1 in
-            put_data dest m ind_addr;
-            m.regs.(rind Rip) <- Int64.add m.regs.(rind Rip) 8L;
-          | _ -> ()
-        end
+        let ind = interp_indirect (List.nth ol 0) m in
+        let dest = List.nth ol 1 in
+        put_data dest m ind;
+        m.regs.(rind Rip) <- Int64.add m.regs.(rind Rip) 8L;
       | Negq -> 
         let dest = List.nth ol 0 in 
         let dest_val = interp_operand dest m in 
@@ -462,7 +470,7 @@ let rec construct_sym_table (sym_table:(lbl, quad) Hashtbl.t) (p:prog) (a:quad) 
     let label = e.lbl in 
     begin
       match Hashtbl.find_opt sym_table label with 
-      | Some _ -> raise (Redefined_sym "label already defined")
+      | Some _ -> raise (Redefined_sym e.lbl)
       | None -> let next_addr = 
         begin 
           match e.asm with 
@@ -480,7 +488,7 @@ let rec construct_sym_table (sym_table:(lbl, quad) Hashtbl.t) (p:prog) (a:quad) 
 let rec find_entry (sym_table:(lbl, quad) Hashtbl.t) (label:lbl) : quad = 
   match Hashtbl.find_opt sym_table label with 
   | Some a -> a 
-  | None -> raise (Undefined_sym "label does not exist")
+  | None -> raise (Undefined_sym label)
   
 
 (* resolves any labels in a complete instruction *)
